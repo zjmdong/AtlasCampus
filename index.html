@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>校园导览 - 体育馆</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+  /* === Layout === */
+  .app { display: flex; height: 100vh; width: 100vw; }
+  
+  /* === 3D Viewer === */
+  .viewer { flex: 1; position: relative; min-width: 0; background: #0a0a0f; }
+  .viewer canvas { display: block; }
+
+  /* === Loading Overlay === */
+  .loading-overlay {
+    position: absolute; inset: 0; z-index: 20;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #0a0a0f;
+    transition: opacity 0.6s;
+  }
+  .loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  .loading-spinner {
+    width: 48px; height: 48px;
+    border: 3px solid rgba(255,255,255,0.08);
+    border-top-color: #4fc3f7;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+    margin-bottom: 20px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { color: #8a8f9a; font-size: 14px; margin-bottom: 12px; }
+  .loading-bar-wrap { width: 260px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
+  .loading-bar-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #4fc3f7, #29b6f6); border-radius: 2px; transition: width 0.3s; }
+
+  /* === Sidebar === */
+  .sidebar {
+    width: 280px; background: #111418;
+    border-left: 1px solid rgba(255,255,255,0.06);
+    display: flex; flex-direction: column;
+    transition: transform 0.3s;
+  }
+  .sidebar.collapsed { transform: translateX(280px); margin-right: -280px; }
+  .sidebar-header {
+    padding: 20px 20px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .sidebar-header h2 { color: #e0e0e0; font-size: 16px; font-weight: 600; }
+  .sidebar-header p { color: #6b7280; font-size: 12px; margin-top: 4px; }
+
+  /* === Node list === */
+  .node-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .node-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 14px; border-radius: 8px; cursor: pointer;
+    transition: background 0.15s; margin-bottom: 2px;
+  }
+  .node-group {
+    color: #818cf8; font-size: 11px; font-weight: 600;
+    padding: 8px 14px 4px; text-transform: none; letter-spacing: 0.5px;
+  }
+  .node-item:hover { background: rgba(255,255,255,0.04); }
+  .node-item.active { background: rgba(79,195,247,0.1); }
+  .node-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+  }
+  .node-item:nth-child(1) .node-icon, .node-item .node-icon.c0 { background: rgba(79,195,247,0.15); }
+  .node-item:nth-child(2) .node-icon, .node-item .node-icon.c1 { background: rgba(129,199,132,0.15); }
+  .node-item:nth-child(3) .node-icon, .node-item .node-icon.c2 { background: rgba(255,183,77,0.15); }
+  .node-item:nth-child(4) .node-icon, .node-item .node-icon.c3 { background: rgba(206,147,216,0.15); }
+  .node-info { overflow: hidden; }
+  .node-name { color: #d4d4d8; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node-desc { color: #6b7280; font-size: 11px; margin-top: 2px; }
+  .node-status {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-left: auto;
+  }
+  .node-item.active .node-status { background: #4fc3f7; box-shadow: 0 0 8px rgba(79,195,247,0.4); }
+  .node-item:not(.active) .node-status { background: rgba(255,255,255,0.1); }
+
+  /* === Sidebar footer === */
+  .sidebar-footer {
+    padding: 12px 20px; border-top: 1px solid rgba(255,255,255,0.06);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .page-indicator { color: #6b7280; font-size: 12px; }
+  .toggle-btn {
+    background: none; border: 1px solid rgba(255,255,255,0.1);
+    color: #8a8f9a; padding: 6px 12px; border-radius: 6px;
+    cursor: pointer; font-size: 12px;
+  }
+  .toggle-btn:hover { background: rgba(255,255,255,0.06); color: #ccc; }
+
+  /* === Zoom hint === */
+  .hint-badge {
+    position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.7); color: #8a8f9a; font-size: 12px;
+    padding: 8px 16px; border-radius: 20px; z-index: 10;
+    pointer-events: none; transition: opacity 0.5s;
+  }
+  .hint-badge.fading { opacity: 0; }
+
+  /* === Coordinate Panel === */
+  .coords-panel {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.75); color: #4fc3f7; font-size: 13px;
+    font-family: 'Courier New', monospace; font-weight: bold;
+    padding: 6px 16px; border-radius: 6px; z-index: 10;
+    pointer-events: none; border: 1px solid rgba(79,195,247,0.2);
+  }
+  /* === Mode Label === */
+  .mode-label {
+    position: absolute; top: 12px; right: 16px;
+    background: rgba(0,0,0,0.65); color: #81c784; font-size: 12px;
+    padding: 5px 12px; border-radius: 6px; z-index: 10;
+    pointer-events: none;
+  }
+
+  /* === Arrow Editor Panel === */
+  .arrow-editor {
+    position: absolute; top: 80px; right: 16px; z-index: 30;
+    background: rgba(17,20,24,0.95); border: 1px solid rgba(79,195,247,0.25);
+    border-radius: 10px; padding: 14px 16px; width: 220px;
+    backdrop-filter: blur(10px); color: #ccc; font-size: 13px;
+  }
+  .arrow-editor-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .arrow-editor-header span { color: #4fc3f7; font-weight: 600; font-size: 14px; }
+  .arrow-editor-header button {
+    background: none; border: none; color: #6b7280; cursor: pointer; font-size: 16px;
+  }
+  .arrow-editor-header button:hover { color: #ef5350; }
+  .ae-row {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+  }
+  .ae-row label { width: 20px; color: #8a8f9a; font-size: 12px; text-align: right; }
+  .ae-row input {
+    width: 70px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px; color: #e0e0e0; padding: 4px 6px; font-size: 12px; font-family: monospace;
+  }
+  .ae-row input:focus { outline: none; border-color: #4fc3f7; }
+  .ae-btns {
+    display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap;
+  }
+  .ae-btns button {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    color: #8a8f9a; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 11px;
+  }
+  .ae-btns button:hover { background: rgba(255,255,255,0.1); color: #ccc; }
+  .ae-btns button.danger:hover { background: rgba(239,83,80,0.2); color: #ef5350; border-color: #ef5350; }
+
+  /* === Nav Button & Arrived === */
+  .nav-btn {
+    position: absolute; top: 12px; left: 12px; z-index: 30;
+    background: rgba(79,195,247,0.15); border: 1px solid rgba(79,195,247,0.3);
+    color: #4fc3f7; padding: 8px 16px; border-radius: 8px;
+    cursor: pointer; font-size: 14px; font-weight: 600;
+  }
+  .nav-btn:hover { background: rgba(79,195,247,0.25); }
+  .arrived-btn {
+    position: absolute; top: 52px; left: 12px; z-index: 30;
+    background: rgba(129,199,132,0.2); border: 1px solid rgba(129,199,132,0.4);
+    color: #81c784; padding: 8px 16px; border-radius: 8px;
+    cursor: pointer; font-size: 14px; font-weight: 600;
+  }
+  .arrived-btn:hover { background: rgba(129,199,132,0.35); }
+
+  /* === Nav Overlay === */
+  .nav-overlay {
+    position: absolute; inset: 0; z-index: 40;
+    background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+  .nav-panel {
+    background: #161a1f; border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px; padding: 24px; width: 380px; max-width: 90vw;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  }
+  .nav-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .nav-panel-header span { color: #4fc3f7; font-size: 16px; font-weight: 600; }
+  .nav-panel-header button { background: none; border: none; color: #6b7280; cursor: pointer; font-size: 18px; }
+  .nav-panel-header button:hover { color: #ef5350; }
+  .nav-section { margin-bottom: 14px; }
+  .nav-section-title { color: #8a8f9a; font-size: 12px; margin-bottom: 6px; font-weight: 600; }
+  .nav-floors { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .nav-floor-btn {
+    padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.03); color: #8a8f9a; cursor: pointer; font-size: 12px;
+  }
+  .nav-floor-btn:hover { background: rgba(255,255,255,0.06); color: #ccc; }
+  .nav-floor-btn.active { background: rgba(79,195,247,0.15); border-color: #4fc3f7; color: #4fc3f7; }
+  .nav-nodes { display: flex; gap: 6px; flex-wrap: wrap; }
+  .nav-node-btn {
+    padding: 5px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.02); color: #a0a4ac; cursor: pointer; font-size: 13px;
+  }
+  .nav-node-btn:hover { background: rgba(255,255,255,0.06); color: #ccc; }
+  .nav-node-btn.active { background: rgba(129,199,132,0.15); border-color: #81c784; color: #81c784; }
+  .nav-start-btn {
+    width: 100%; padding: 10px; border-radius: 8px; border: none;
+    background: linear-gradient(135deg, #4fc3f7, #29b6f6);
+    color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 8px;
+  }
+  .nav-start-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .nav-start-btn:not(:disabled):hover { opacity: 0.9; }
+
+  /* === Step Bar === */
+  .step-bar {
+    position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.8); border: 1px solid rgba(79,195,247,0.3);
+    border-radius: 10px; padding: 10px 24px; z-index: 30;
+    color: #4fc3f7; font-size: 14px; font-weight: 600;
+    backdrop-filter: blur(8px);
+  }
+
+  /* === Responsive === */
+  @media (max-width: 768px) {
+    .sidebar { width: 260px; }
+    .sidebar.collapsed { transform: translateX(260px); margin-right: -260px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- 3D Viewer -->
+  <div class="viewer" id="viewer">
+    <button class="nav-btn" id="navBtn">🧭 导航</button>
+    <button class="arrived-btn" id="arrivedBtn" style="display:none">✅ 我已抵达</button>
+    <div class="nav-overlay" id="navOverlay" style="display:none">
+      <div class="nav-panel">
+        <div class="nav-panel-header"><span>🧭 路径导航</span><button id="navClose">✕</button></div>
+        <div class="nav-section"><div class="nav-section-title">📍 选择起点</div><div class="nav-floors" id="navStartFloors"></div><div class="nav-nodes" id="navStartNodes"></div></div>
+        <div class="nav-section"><div class="nav-section-title">🏁 选择终点</div><div class="nav-floors" id="navDestFloors"></div><div class="nav-nodes" id="navDestNodes"></div></div>
+        <button class="nav-start-btn" id="navStartBtn" disabled>开始导航</button>
+      </div>
+    </div>
+    <div class="step-bar" id="stepBar" style="display:none"><span id="stepText"></span></div>
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="loading-spinner"></div>
+      <div class="loading-text" id="loadingText">正在加载模型...</div>
+      <div class="loading-bar-wrap"><div class="loading-bar-fill" id="loadingBar"></div></div>
+    </div>
+    <div class="hint-badge" id="hintBadge">WASD 移动 | 鼠标转向 | 滚轮缩放 | M=模式 | N=箭头 | E=编辑箭头 | B=侧栏</div>
+    <div class="coords-panel" id="coordsDisplay">X:-40.0 Y:3.0 Z:0.0 | Dir:(0.00 0.00 -1.00)</div>
+    <div class="mode-label" id="modeLabel">🔓 自由漫游 (WASD+鼠标)</div>
+    <div class="arrow-editor" id="arrowEditor" style="display:none">
+      <div class="arrow-editor-header">
+        <span>🎯 箭头 #<b id="aeIdx">1</b></span>
+        <button id="aeClose" title="关闭">✕</button>
+      </div>
+      <div class="ae-row"><label>X</label><input type="number" id="aeX" step="0.5"><label>Y</label><input type="number" id="aeY" step="0.5"><label>Z</label><input type="number" id="aeZ" step="0.5"></div>
+      <div class="ae-row"><label>°</label><input type="number" id="aeAngle" step="1" style="width:158px"></div>
+      <div class="ae-btns">
+        <button id="aePrev">◀</button>
+        <button id="aeNext">▶</button>
+        <button id="aeAdd">+ 新增</button>
+        <button id="aeDel" class="danger">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h2>📍 导览节点</h2>
+      <p>SUIS 协和双语 - 校园导览</p>
+    </div>
+    <div class="node-list" id="nodeList">
+      <!-- Injected by JS -->
+    </div>
+    <div class="sidebar-footer">
+      <span class="page-indicator" id="pageIndicator">当前：体育馆</span>
+      <button class="toggle-btn" id="toggleSidebar">收起侧栏 (B)</button>
+    </div>
+  </aside>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./engine/three/three.module.js",
+    "three/addons/": "./engine/three/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { FirstPersonControls } from './engine/three/FirstPersonControls.js';
+import { LCCRender } from './sdk/lcc-0.6.0.js';
+
+// === Model registry ===
+const ORIGIN = location.origin;
+const MODELS = {
+  gym:    { path:`${ORIGIN}/model/suis/%E5%8D%8F%E5%92%8C/%E4%BD%93%E8%82%B2%E9%A6%86/lcc-result/%E4%BD%93%E8%82%B2%E9%A6%86.lcc` },
+  teach12:{ path:`${ORIGIN}/model/jiaoxuelou/%E6%95%99%E5%AD%A6%E6%A5%BC1.2%E6%A5%BC/lcc-result/%E6%95%99%E5%AD%A6%E6%A5%BC1.2%E6%A5%BC.lcc` },
+  teach3: { path:`${ORIGIN}/model/jiaoxuelou/%E6%95%99%E5%AD%A6%E6%A5%BC3%E6%A5%BC/lcc-result/%E6%95%99%E5%AD%A6%E6%A5%BC3.lcc` },
+  teach4: { path:`${ORIGIN}/model/jiaoxuelou/%E6%95%99%E5%AD%A6%E6%A5%BC4%E6%A5%BC/lcc-result/%E6%95%99%E5%AD%A6%E6%A5%BC4%E6%A5%BC.lcc` },
+  teach5: { path:`${ORIGIN}/model/jiaoxuelou/%E6%95%99%E5%AD%A6%E6%A5%BC5%E6%A5%BC/lcc-result/%E6%95%99%E5%AD%A6%E6%A5%BC5.lcc` },
+};
+
+// Nodes: each has modelId + pos. Same modelId = camera jump; different = page reload
+const NODES = [
+  { id:'t1_lobby',   name:'   大厅',           modelId:'teach12',pos:[-4,2,5],      group:'教学楼1楼' },
+  { id:'t1_library', name:'   图书馆',         modelId:'teach12',pos:[24,2,-54],    group:'教学楼1楼' },
+  { id:'t1_elev',    name:'   电梯厅',         modelId:'teach12',pos:[8.8,2,-84],   group:'教学楼1楼' },
+  { id:'t2_elev',    name:'📚 教学楼2楼-电梯厅', modelId:'teach12',pos:[8.8,6,-84] },
+  { id:'t2_canteen', name:'🍽️ 食堂',         modelId:'teach12',pos:[38,6,-75] },
+  { id:'gym',        name:'🏟️ 体育馆',       modelId:'gym',    pos:[-44,2,-13],   group:'教学楼3楼' },
+  { id:'teach3',     name:'   电梯厅',         modelId:'teach3', pos:[-9.5,2,-31.5],group:'教学楼3楼' },
+  { id:'teach4',     name:'📚 教学楼4楼-电梯厅', modelId:'teach4', pos:[27,2,11] },
+  { id:'teach5',     name:'📚 教学楼5楼-电梯厅', modelId:'teach5', pos:[-13,1.5,34] },
+  { id:'t5_theater', name:'🎭 c519小剧场',    modelId:'teach5', pos:[25,1,47] },
+];
+
+// === Floor / Node Registry for Navigation ===
+const FLOOR_DATA = [
+  { id:'f1', name:'教学楼1楼', modelId:'teach12', elevatorNodeId:'t1_elev', nodes:['t1_lobby','t1_library','t1_elev'] },
+  { id:'f2', name:'教学楼2楼', modelId:'teach12', elevatorNodeId:'t2_elev', nodes:['t2_elev','t2_canteen'] },
+  { id:'f3', name:'教学楼3楼', modelId:'teach3', elevatorNodeId:'teach3', nodes:['teach3'] },
+  { id:'f4', name:'教学楼4楼', modelId:'teach4', elevatorNodeId:'teach4', nodes:['teach4'] },
+  { id:'f5', name:'教学楼5楼', modelId:'teach5', elevatorNodeId:'teach5', nodes:['teach5','t5_theater'] },
+  { id:'gym_f', name:'体育馆', modelId:'gym', elevatorNodeId:'teach3', nodes:['gym'] },
+];
+
+let navSel = { startFloor:null, startNode:null, destFloor:null, destNode:null };
+let navStep = 0;
+function nodeName(id) { const n=NODES.find(x=>x.id===id); return n?n.name.trim():id; }
+function floorName(id) { const f=FLOOR_DATA.find(x=>x.id===id); return f?f.name:id; }
+
+function renderNavPanel() {
+  ['Start','Dest'].forEach(which=>{
+    const selFloor=which==='Start'?navSel.startFloor:navSel.destFloor;
+    const selNode=which==='Start'?navSel.startNode:navSel.destNode;
+    document.getElementById('nav'+which+'Floors').innerHTML=FLOOR_DATA.map(f=>
+      `<button class="nav-floor-btn${f.id===selFloor?' active':''}" data-fid="${f.id}" data-which="${which}">${f.name.slice(-3)}</button>`).join('');
+    if(selFloor){
+      const fd=FLOOR_DATA.find(f=>f.id===selFloor);
+      document.getElementById('nav'+which+'Nodes').innerHTML=fd.nodes.map(nid=>{
+        const nn=NODES.find(x=>x.id===nid);
+        return `<button class="nav-node-btn${nid===selNode?' active':''}" data-nid="${nid}" data-which="${which}">${nn?nn.name.trim():nid}</button>`;
+      }).join('');
+    }else{
+      document.getElementById('nav'+which+'Nodes').innerHTML='<span style="color:#6b7280;font-size:12px">请先选择楼层</span>';
+    }
+  });
+  const can=navSel.startNode && navSel.destNode && navSel.startNode!==navSel.destNode;
+  document.getElementById('navStartBtn').disabled=!can;
+}
+
+function setupNavPanel(){
+  document.getElementById('navBtn').addEventListener('click',()=>{document.getElementById('navOverlay').style.display='flex';renderNavPanel();});
+  document.getElementById('navClose').addEventListener('click',()=>{document.getElementById('navOverlay').style.display='none';});
+  document.getElementById('navOverlay').addEventListener('click',(e)=>{
+    if(e.target===e.currentTarget){e.currentTarget.style.display='none';return;}
+    const btn=e.target.closest('button'); if(!btn)return;
+    if(btn.classList.contains('nav-floor-btn')){
+      const w=btn.dataset.which;
+      if(w==='Start'){navSel.startFloor=btn.dataset.fid;navSel.startNode=null;}
+      else{navSel.destFloor=btn.dataset.fid;navSel.destNode=null;}
+      renderNavPanel();
+    }else if(btn.classList.contains('nav-node-btn')){
+      const w=btn.dataset.which;
+      if(w==='Start')navSel.startNode=btn.dataset.nid;
+      else navSel.destNode=btn.dataset.nid;
+      renderNavPanel();
+    }
+  });
+  document.getElementById('navStartBtn').addEventListener('click',startNavigation);
+  document.getElementById('arrivedBtn').addEventListener('click',onArrived);
+}
+
+function startNavigation(){
+  if(!navSel.startNode||!navSel.destNode)return;
+  // Determine active segments
+  const sF=FLOOR_DATA.find(f=>f.id===navSel.startFloor);
+  const dF=FLOOR_DATA.find(f=>f.id===navSel.destFloor);
+  activeSegments=null;
+  if(sF&&dF&&sF.id===dF.id){
+    // Same floor: direct path
+    const m=SEGMENT_MAP[navSel.startNode];
+    if(m&&m[navSel.destNode])activeSegments=m[navSel.destNode];
+  }else if(sF){
+    // Cross-floor step 1: start → elevator
+    const m=SEGMENT_MAP[navSel.startNode];
+    if(m&&m[sF.elevatorNodeId])activeSegments=m[sF.elevatorNodeId];
+  }
+  sessionStorage.setItem('campusNav',JSON.stringify({startNodeId:navSel.startNode,destNodeId:navSel.destNode,startFloorId:navSel.startFloor,destFloorId:navSel.destFloor,step:1,activeSegs:activeSegments}));
+  navStep=1; navVisible=true; if(navGroup)navGroup.visible=true;
+  buildNavArrows(); showNavUI();
+  const sn=NODES.find(n=>n.id===navSel.startNode);
+  if(sn&&sn.id!==currentNode.id)jumpToNode(sn);
+  document.getElementById('navOverlay').style.display='none';
+}
+
+function showNavUI(){
+  document.getElementById('stepBar').style.display='block';
+  document.getElementById('arrivedBtn').style.display='block';
+  document.getElementById('navBtn').style.display='none';
+  const sF=FLOOR_DATA.find(f=>f.id===navSel.startFloor);
+  const dF=FLOOR_DATA.find(f=>f.id===navSel.destFloor);
+  if(sF&&dF&&sF.id!==dF.id){
+    document.getElementById('stepText').textContent=`Step ${navStep}: ${navStep===1?'前往'+floorName(navSel.startFloor)+'电梯厅':'前往目的地 '+nodeName(navSel.destNode)} 跟随箭头指引`;
+  }else{
+    document.getElementById('stepText').textContent=`前往 ${nodeName(navSel.destNode)} 跟随箭头指引`;
+  }
+}
+
+function onArrived(){
+  const sF=FLOOR_DATA.find(f=>f.id===navSel.startFloor);
+  const dF=FLOOR_DATA.find(f=>f.id===navSel.destFloor);
+  if(sF&&dF&&sF.id!==dF.id&&navStep===1){
+    navStep=2;
+    // Step 2: show dest floor arrows (from elevator to dest if mapped)
+    const m=SEGMENT_MAP[dF.elevatorNodeId];
+    activeSegments=(m&&m[navSel.destNode])?m[navSel.destNode]:[];
+    sessionStorage.setItem('campusNav',JSON.stringify({startNodeId:navSel.startNode,destNodeId:navSel.destNode,startFloorId:navSel.startFloor,destFloorId:navSel.destFloor,step:2,activeSegs:activeSegments}));
+    const en=NODES.find(n=>n.id===dF.elevatorNodeId);
+    if(en&&en.modelId!==currentModel){location.hash='#'+dF.elevatorNodeId;location.reload();}
+    else{if(en)jumpToNode(en);buildNavArrows();if(navGroup)navGroup.visible=true;showNavUI();}
+  }else{endNavigation();}
+}
+
+function endNavigation(){
+  navStep=0; navVisible=false; activeSegments=null;
+  if(navGroup)navGroup.visible=false;
+  document.getElementById('stepBar').style.display='none';
+  document.getElementById('arrivedBtn').style.display='none';
+  document.getElementById('navBtn').style.display='block';
+  sessionStorage.removeItem('campusNav');
+}
+
+function resumeNav(){
+  const s=sessionStorage.getItem('campusNav'); if(!s)return;
+  const st=JSON.parse(s);
+  navSel={startFloor:st.startFloorId,startNode:st.startNodeId,destFloor:st.destFloorId,destNode:st.destNodeId};
+  navStep=st.step; navVisible=true; activeSegments=st.activeSegs||null;
+  if(navStep===2){
+    const dF=FLOOR_DATA.find(f=>f.id===navSel.destFloor);
+    if(dF){const en=NODES.find(n=>n.id===dF.elevatorNodeId);if(en)jumpToNode(en);}
+  }
+  buildNavArrows(); if(navGroup)navGroup.visible=true;
+  showNavUI();
+}
+
+// === Navigation Arrows ===
+const NAV_ARROWS = [
+  { at:[0,-1,-2],   angleDeg:68,  color:0xffb74d, seg:'lobby_lib',     modelId:'teach12' },
+  { at:[19,-1,-35],  angleDeg:100, color:0xffb74d, seg:'lobby_lib',     modelId:'teach12' },
+  { at:[9,-1,-20],   angleDeg:60,  color:0xffb74d, seg:'lobby_lib',     modelId:'teach12' },
+  { at:[27,-1,-60],  angleDeg:60,  color:0xffb74d, seg:'lib_elev',      modelId:'teach12' },
+  { at:[32,-1,-70],  angleDeg:150, color:0xffb74d, seg:'lib_elev',      modelId:'teach12' },
+  { at:[15,4,-80],  angleDeg:-30, color:0xffb74d, seg:'elev2_canteen', modelId:'teach12' },
+  { at:[32,4,-70],  angleDeg:60,  color:0xffb74d, seg:'elev2_canteen', modelId:'teach12' },
+  { at:[-8,-1,-24], angleDeg:-80, color:0xffb74d, seg:'elev3_gym',     modelId:'teach3' },
+  { at:[-4,-1,-4],  angleDeg:5,   color:0xffb74d, seg:'elev3_gym',     modelId:'teach3' },
+  { at:[-16,-1,44], angleDeg:-10, color:0xffb74d, seg:'elev5_theater', modelId:'teach5' },
+  { at:[11,-1,51],  angleDeg:5,   color:0xffb74d, seg:'elev5_theater', modelId:'teach5' },
+];
+
+const SEGMENT_MAP = {
+  't1_lobby': { 't1_library':['lobby_lib'], 't1_elev':['lobby_lib','lib_elev'] },
+  't1_library': { 't1_elev':['lib_elev'] },
+  't2_elev':    { 't2_canteen':['elev2_canteen'] },
+  'gym':        { 'gym':['elev3_gym'] },
+  'teach5':     { 't5_theater':['elev5_theater'] },
+};
+
+let activeSegments = null; // null=show all, [] = none, ['lobby_lib'] = filter
+
+let navGroup = null;
+let navVisible = false;
+let editArrowIdx = 0;
+
+function createArrowMesh(color) {
+  const shape = new THREE.Shape();
+  shape.moveTo(-2.5, -0.5);
+  shape.lineTo(0, -0.5);
+  shape.lineTo(0, -0.8);
+  shape.lineTo(2, 0);
+  shape.lineTo(0, 0.8);
+  shape.lineTo(0, 0.5);
+  shape.lineTo(-2.5, 0.5);
+  shape.closePath();
+
+  const depth = 0.08;
+  const geom = new THREE.ExtrudeGeometry(shape, { steps: 1, depth, bevelEnabled: false });
+  const mat = new THREE.MeshBasicMaterial({
+    color,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.85,
+    depthWrite: false
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.renderOrder = 1;
+  return mesh;
+}
+
+function buildNavArrows() {
+  if (navGroup) { scene.remove(navGroup); }
+  navGroup = new THREE.Group();
+  navGroup.name = 'navArrows';
+  for (const a of NAV_ARROWS) {
+    if (a.modelId && a.modelId !== currentModel) continue;
+    if (activeSegments && a.seg && !activeSegments.includes(a.seg)) continue;
+    const rad = THREE.MathUtils.degToRad(a.angleDeg);
+    const arrow = createArrowMesh(a.color);
+    const qX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+    const qY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rad);
+    arrow.quaternion.copy(qY).multiply(qX);
+    arrow.position.set(a.at[0], a.at[1], a.at[2]);
+    navGroup.add(arrow);
+    const ringGeom = new THREE.RingGeometry(1.2, 1.6, 32);
+    const ringMat = new THREE.MeshBasicMaterial({ color: a.color, side: THREE.DoubleSide, transparent: true, opacity: 0.12, depthWrite: false });
+    const ring = new THREE.Mesh(ringGeom, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(a.at[0], a.at[1] - 0.05, a.at[2]);
+    navGroup.add(ring);
+  }
+  navGroup.visible = navVisible;
+  scene.add(navGroup);
+}
+
+// === Arrow Editor ===
+function showEditor() {
+  const a = NAV_ARROWS[editArrowIdx];
+  if (!a) return;
+  document.getElementById('aeIdx').textContent = editArrowIdx + 1;
+  document.getElementById('aeX').value = a.at[0];
+  document.getElementById('aeY').value = a.at[1];
+  document.getElementById('aeZ').value = a.at[2];
+  document.getElementById('aeAngle').value = a.angleDeg;
+}
+function applyEdit() {
+  const a = NAV_ARROWS[editArrowIdx];
+  if (!a) return;
+  a.at[0] = parseFloat(document.getElementById('aeX').value) || a.at[0];
+  a.at[1] = parseFloat(document.getElementById('aeY').value) || a.at[1];
+  a.at[2] = parseFloat(document.getElementById('aeZ').value) || a.at[2];
+  a.angleDeg = parseFloat(document.getElementById('aeAngle').value) || a.angleDeg;
+  buildNavArrows();
+}
+function addArrow() {
+  NAV_ARROWS.push({ at: [0, 2, 0], angleDeg: 0, color: 0xffb74d, seg: '', modelId: currentModel });
+  editArrowIdx = NAV_ARROWS.length - 1;
+  buildNavArrows();
+  showEditor();
+}
+function deleteArrow() {
+  if (NAV_ARROWS.length <= 1) return;
+  NAV_ARROWS.splice(editArrowIdx, 1);
+  if (editArrowIdx >= NAV_ARROWS.length) editArrowIdx = NAV_ARROWS.length - 1;
+  buildNavArrows();
+  showEditor();
+}
+function prevArrow() { editArrowIdx = (editArrowIdx - 1 + NAV_ARROWS.length) % NAV_ARROWS.length; showEditor(); document.getElementById('arrowEditor').style.display = 'block'; }
+function nextArrow() { editArrowIdx = (editArrowIdx + 1) % NAV_ARROWS.length; showEditor(); document.getElementById('arrowEditor').style.display = 'block'; }
+
+document.getElementById('aeClose').addEventListener('click', () => { document.getElementById('arrowEditor').style.display = 'none'; });
+document.getElementById('aePrev').addEventListener('click', prevArrow);
+document.getElementById('aeNext').addEventListener('click', nextArrow);
+document.getElementById('aeAdd').addEventListener('click', addArrow);
+document.getElementById('aeDel').addEventListener('click', deleteArrow);
+['aeX','aeY','aeZ','aeAngle'].forEach(id => { document.getElementById(id).addEventListener('input', applyEdit); });
+
+// Read model from URL hash
+let hashId = location.hash.slice(1) || 'gym';
+let currentNode = NODES.find(n => n.id === hashId) || NODES[0];
+let currentModel = currentNode.modelId;
+const mInfo = MODELS[currentModel];
+
+console.log(`🏗️ Loading: ${currentNode.name.trim()} | Pos: [${currentNode.pos}]`);
+
+// ============================================================
+//  SCENE SETUP
+// ============================================================
+const viewerEl = document.getElementById('viewer');
+const scene = new THREE.Scene();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x0a0a0f);
+viewerEl.appendChild(renderer.domElement);
+
+function resizeRenderer() {
+  const sb = document.getElementById('sidebar');
+  const sw = sb.classList.contains('collapsed') ? 0 : sb.offsetWidth;
+  const w = window.innerWidth - sw;
+  renderer.setSize(w, window.innerHeight);
+  camera.aspect = w / window.innerHeight;
+  camera.updateProjectionMatrix();
+}
+
+// ============================================================
+//  CAMERA + DUAL MODE
+// ============================================================
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 5000);
+camera.position.set(currentNode.pos[0], currentNode.pos[1], currentNode.pos[2]);
+
+const fpControls = new FirstPersonControls(camera, renderer.domElement);
+fpControls.movementSpeed = 8;
+fpControls.lookSpeed = 0.06;
+fpControls.lookAt(new THREE.Vector3(currentNode.pos[0], currentNode.pos[1], currentNode.pos[2] - 10));
+fpControls.constrainVertical = false;
+fpControls.activeLook = true;
+fpControls.enabled = true;
+
+const orbitControls = new OrbitControls(camera, renderer.domElement);
+orbitControls.enablePan = false;
+orbitControls.enableZoom = true;
+orbitControls.minDistance = 0.5;
+orbitControls.maxDistance = 50;
+orbitControls.enableDamping = true;
+orbitControls.dampingFactor = 0.05;
+orbitControls.rotateSpeed = 0.5;
+orbitControls.enabled = false;
+
+let mode = 'free';
+function setMode(m) {
+  mode = m;
+  document.getElementById('modeLabel').textContent = m === 'free' ? '🔓 自由漫游 (WASD+鼠标)' : '🔒 定点观察';
+  fpControls.enabled = (m === 'free');
+  orbitControls.enabled = (m === 'fixed');
+  if (m === 'fixed') { orbitControls.target.copy(camera.position); orbitControls.update(); }
+}
+
+// === Jump to node (same model, just move camera)
+function jumpToNode(node) {
+  currentNode = node;
+  const p = node.pos;
+  camera.position.set(p[0], p[1], p[2]);
+  fpControls.lookAt(new THREE.Vector3(p[0], p[1], p[2] - 10));
+  if (mode === 'fixed') { orbitControls.target.copy(camera.position); orbitControls.update(); }
+  pageIndicator.textContent = `当前：${node.name.trim()}`;
+  renderNodes();
+}
+
+// ============================================================
+//  COORDINATE HUD
+// ============================================================
+function updateCoords() {
+  const p = camera.position;
+  const d = camera.getWorldDirection(new THREE.Vector3());
+  const el = document.getElementById('coordsDisplay');
+  if (el) el.innerHTML = `X:${p.x.toFixed(1)} Y:${p.y.toFixed(1)} Z:${p.z.toFixed(1)} | Dir:(${d.x.toFixed(2)} ${d.y.toFixed(2)} ${d.z.toFixed(2)})`;
+}
+
+// ============================================================
+//  MODEL MATRIX
+// ============================================================
+const modelMatrix = new THREE.Matrix4(-1,0,0,0, 0,0,1,0, 0,1,0,0, 0,0,0,1);
+
+// ============================================================
+//  LOADING UI
+// ============================================================
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingText = document.getElementById('loadingText');
+const loadingBar = document.getElementById('loadingBar');
+const hintBadge = document.getElementById('hintBadge');
+loadingText.textContent = `正在加载 ${currentNode.name.trim()}...`;
+
+// ============================================================
+//  LOAD LCC MODEL
+// ============================================================
+let lccObj = null;
+
+lccObj = LCCRender.load({
+  camera, scene, dataPath: mInfo.path,
+  renderLib: THREE, canvas: renderer.domElement, renderer,
+  useEnv: true, useIndexDB: true, useLoadingEffect: true,
+  modelMatrix, appKey: null
+}, (mesh) => {
+  loadingText.textContent = `${currentNode.name.trim()} — 加载完成！`;
+  loadingBar.style.width = '100%';
+  setTimeout(() => { loadingOverlay.classList.add('hidden'); buildNavArrows(); resumeNav(); }, 400);
+  setTimeout(() => hintBadge.classList.add('fading'), 8000);
+  console.log('Loaded:', currentNode.name.trim(), mesh);
+}, (percent) => {
+  const pct = (percent * 100).toFixed(0);
+  loadingBar.style.width = pct + '%';
+  loadingText.textContent = `加载中 ${pct}%`;
+}, () => {
+  loadingText.textContent = `${currentNode.name.trim()} 加载失败`;
+  loadingText.style.color = '#ef5350';
+});
+
+// ============================================================
+//  RENDER LOOP
+// ============================================================
+const clock = new THREE.Clock();
+function render() {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (fpControls.enabled) fpControls.update(dt);
+  if (orbitControls.enabled) orbitControls.update();
+  LCCRender.update();
+  renderer.render(scene, camera);
+  updateCoords();
+}
+renderer.setAnimationLoop(render);
+
+// ============================================================
+//  SIDEBAR — same modelId=camera jump, different=hash reload
+// ============================================================
+const nodeList = document.getElementById('nodeList');
+const pageIndicator = document.getElementById('pageIndicator');
+pageIndicator.textContent = `当前：${currentNode.name.trim()}`;
+
+function renderNodes() {
+  let html = '';
+  let lastGroup = '';
+  let ci = 0;
+  const colors = ['c0','c1','c2','c3'];
+  for (const n of NODES) {
+    if (n.group && n.group !== lastGroup) {
+      html += `<div class="node-group">📚 ${n.group}</div>`;
+      lastGroup = n.group;
+      ci = 0;
+    } else if (!n.group) lastGroup = '';
+    const isActive = n.id === currentNode.id;
+    const c = colors[ci % colors.length]; ci++;
+    html += `<div class="node-item${isActive?' active':''}" data-id="${n.id}">
+      <div class="node-icon ${c}">${n.name.split(' ')[0]}</div>
+      <div class="node-info"><div class="node-name">${n.name}</div></div>
+      <div class="node-status"></div>
+    </div>`;
+  }
+  nodeList.innerHTML = html;
+  nodeList.querySelectorAll('.node-item').forEach(el => el.addEventListener('click', () => {
+    const id = el.dataset.id;
+    const node = NODES.find(nn => nn.id === id);
+    if (!node) return;
+    if (node.modelId === currentModel) {
+      jumpToNode(node); // same model, just move
+    } else {
+      location.hash = '#' + node.id;
+      location.reload();
+    }
+  }));
+}
+renderNodes();
+
+// ============================================================
+//  SIDEBAR TOGGLE
+// ============================================================
+const sidebar = document.getElementById('sidebar');
+const toggleBtn = document.getElementById('toggleSidebar');
+let sidebarOpen = true;
+toggleBtn.addEventListener('click', () => {
+  sidebarOpen = !sidebarOpen;
+  sidebar.classList.toggle('collapsed', !sidebarOpen);
+  toggleBtn.textContent = sidebarOpen ? '收起侧栏' : '展开侧栏';
+  setTimeout(resizeRenderer, 300);
+});
+
+// ============================================================
+//  KEYBOARD
+// ============================================================
+window.addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  if (e.target.tagName === 'INPUT') return;
+  if (k === 'b') { toggleBtn.click(); }
+  if (k === 'm') { setMode(mode === 'free' ? 'fixed' : 'free'); }
+  if (k === 'n') { navVisible = !navVisible; if (navGroup) navGroup.visible = navVisible; }
+  if (k === 'e') { const ed = document.getElementById('arrowEditor'); if (ed.style.display==='none'||!ed.style.display){showEditor();ed.style.display='block';}else{ed.style.display='none';} }
+});
+
+// ============================================================
+resizeRenderer();
+window.addEventListener('resize', resizeRenderer);
+setupNavPanel();
+
+</script>
+
+</body>
+</html>

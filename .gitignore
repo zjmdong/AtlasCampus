@@ -1,0 +1,14 @@
+# 模型文件太大，不上传 GitHub
+model/
+
+# 测试项目
+examples-test/
+
+# 系统和编辑器
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+node_modules/
